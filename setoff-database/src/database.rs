@@ -68,7 +68,7 @@ pub async fn database_loop<AD, S>(
     while let Some(database_request) = incoming_requests.next().await {
         let DatabaseRequest {
             mutations,
-            mut response_sender,
+            response_sender,
         } = database_request;
         let mutate_fut = future::lazy(move |_| {
             atomic_db
@@ -89,6 +89,8 @@ pub async fn database_loop<AD, S>(
 
 #[cfg(test)]
 mod tests {
+    use std::thread::spawn;
+
     use futures::executor::{LocalPool, ThreadPool};
     use futures::task::{Spawn, SpawnExt};
 
@@ -156,7 +158,26 @@ mod tests {
         let atomic_db = DummyAtomicDb::new();
         let (request_sender, incoming_requests) = mpsc::channel(0);
         let loop_fut = database_loop(atomic_db, incoming_requests, spawner.clone());
-
+        let loop_res_fut = spawner.spawn_with_handle(loop_fut).unwrap();
+        let mut db_client = DatabaseClient::new(request_sender);
+        db_client
+            .mutate(vec![
+                DummyMutation::Inc,
+                DummyMutation::Inc,
+                DummyMutation::Dec,
+            ]).await
+            .unwrap();
+        db_client
+            .mutate(vec![
+                DummyMutation::Inc,
+                DummyMutation::Inc,
+                DummyMutation::Dec,
+            ]).await
+            .unwrap();
+        // Dropping the only client should close the loop
+        drop(db_client);
+        let atomic_db = loop_res_fut.await.unwrap();
+        assert_eq!(atomic_db.dummy_state.x, 1 + 1 - 1 + 1 + 1 - 1);
     }
 
     #[test]
